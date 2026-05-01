@@ -161,16 +161,17 @@ var
             parameters["pattern"] = "conway-clock-ampm";
             parameters["clock"] = "1";
             parameters["gpm"] = "11520";
-            // The AM/PM pattern's display first reads 12:01 at gen ≈ 26,960
-            // (probed empirically). Centering on the minute means epoch ≈
-            // 1.84 min before noon — round to 11:58:10.
-            parameters["epoch"] = "11:58:10";
+            // The AM/PM pattern's first 12:01 transition is at gen ≈ 26,500.
+            // Empirically this epoch lands the displayed minute on the wall
+            // minute within a few seconds.
+            parameters["epoch"] = "11:59:10";
             // step=8 (2^3 gens/frame) × fps=24 = 192 gens/sec = 11520 gpm exactly,
             // so the engine ticks in real time between refreshes.
             parameters["step"] = "8";
             parameters["fps"] = "24";
             parameters["noui"] = "1";
-            parameters["refresh"] = "60";
+            // Reload daily at 9am to absorb any browser timer drift overnight.
+            parameters["refresh_at"] = "09:00";
         }
 
         if(parameters["step"] && /^\d+$/.test(parameters["step"]))
@@ -307,6 +308,21 @@ var
         if(parameters["refresh"] && /^\d+$/.test(parameters["refresh"]))
         {
             setTimeout(function() { location.reload(); }, Number(parameters["refresh"]) * 1000);
+        }
+
+        // Conway-clock fork: ?refresh_at=HH:MM reloads at the next occurrence
+        // of that wall-clock time (daily). Useful for once-a-day resync.
+        var refresh_at_match = parameters["refresh_at"] && /^(\d{1,2}):(\d{2})$/.exec(parameters["refresh_at"]);
+        if(refresh_at_match)
+        {
+            var refresh_now = new Date();
+            var refresh_target = new Date(refresh_now);
+            refresh_target.setHours(Number(refresh_at_match[1]), Number(refresh_at_match[2]), 0, 0);
+            if(refresh_target <= refresh_now)
+            {
+                refresh_target.setDate(refresh_target.getDate() + 1);
+            }
+            setTimeout(function() { location.reload(); }, refresh_target - refresh_now);
         }
 
         if(parameters["fps"] && /^\d+$/.test(parameters["fps"]))
