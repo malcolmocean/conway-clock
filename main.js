@@ -97,6 +97,13 @@ var
         setTimeout;
 
     // setup
+    // Conway-clock fork: target generation to fast-forward to before first render.
+    // Computed from ?clock=1 + ?gpm=N (+ optional ?epoch=HH:MM, default 12:00) or
+    // overridden directly via ?gen=N. 0 means "no fast-forward."
+    var fast_forward_target = 0;
+    // Set when ?clock=1 mode is active so the engine auto-runs after FF.
+    var auto_run = false;
+
     window.onload = function()
     {
         if(loaded)
@@ -106,6 +113,10 @@ var
         }
 
         loaded = true;
+
+        // Conway-clock fork: expose engine for console-based calibration.
+        window.life = life;
+        window.drawer = drawer;
 
         initial_description = document.querySelector("meta[name=description]").content;
 
@@ -140,11 +151,78 @@ var
             parameters[param[0]] = param[1];
         }
 
+        // Conway-clock fork: if the user didn't ask for a specific pattern,
+        // gist, or other behavior, default to the AM/PM kiosk so the bare
+        // GH Pages URL Just Works on the conference room TV. Cache-busting
+        // params like ?bust=123 are ignored for this check.
+        if(!parameters["pattern"] && !parameters["gist"] && !parameters["clock"] &&
+           !parameters["gen"] && parameters["meta"] !== "1")
+        {
+            parameters["pattern"] = "conway-clock-ampm";
+            parameters["clock"] = "1";
+            parameters["gpm"] = "11520";
+            // The AM/PM pattern's display first reads 12:01 at gen ≈ 26,960
+            // (probed empirically). Centering on the minute means epoch ≈
+            // 1.84 min before noon — round to 11:58:10.
+            parameters["epoch"] = "11:58:10";
+            // step=8 (2^3 gens/frame) × fps=24 = 192 gens/sec = 11520 gpm exactly,
+            // so the engine ticks in real time between refreshes.
+            parameters["step"] = "8";
+            parameters["fps"] = "24";
+            parameters["noui"] = "1";
+            parameters["refresh"] = "60";
+        }
+
         if(parameters["step"] && /^\d+$/.test(parameters["step"]))
         {
             var step_parameter = Math.round(Math.log(Number(parameters["step"])) / Math.LN2);
 
             life.set_step(step_parameter);
+        }
+
+        // Conway-clock fork: figure out the target generation for fast-forward.
+        // Priority: explicit ?gen=N wins; otherwise ?clock=1 with ?gpm=N
+        // (and optional ?epoch=HH:MM, default "12:00") computes it from system time.
+        if(parameters["gen"] && /^\d+$/.test(parameters["gen"]))
+        {
+            fast_forward_target = Number(parameters["gen"]);
+        }
+        else if(parameters["clock"] === "1" && parameters["gpm"] && /^\d+(\.\d+)?$/.test(parameters["gpm"]))
+        {
+            auto_run = true;
+            var gpm = Number(parameters["gpm"]);
+            var epoch_h = 12, epoch_m = 0, epoch_s = 0;
+            // Accept HH:MM or HH:MM:SS so you can absorb the pattern's warmup
+            // offset (~11k gens for Dim's clock at 11520 gpm ≈ 57s) into the epoch.
+            var epoch_match = parameters["epoch"] && /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(parameters["epoch"]);
+            if(epoch_match)
+            {
+                epoch_h = Number(epoch_match[1]);
+                epoch_m = Number(epoch_match[2]);
+                epoch_s = epoch_match[3] ? Number(epoch_match[3]) : 0;
+            }
+            // ?starttime=HH:MM (or HH:MM:SS) overrides the system clock, so you
+            // can preview "what does the clock look like at 3:42 PM?" without waiting.
+            var now = new Date();
+            var starttime_match = parameters["starttime"] && /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(parameters["starttime"]);
+            if(starttime_match)
+            {
+                now.setHours(
+                    Number(starttime_match[1]),
+                    Number(starttime_match[2]),
+                    starttime_match[3] ? Number(starttime_match[3]) : 0,
+                    0
+                );
+            }
+            var epoch = new Date(now);
+            epoch.setHours(epoch_h, epoch_m, epoch_s, 0);
+            // If epoch is in the future today, the most recent epoch was yesterday.
+            if(epoch > now)
+            {
+                epoch.setDate(epoch.getDate() - 1);
+            }
+            var minutes_since_epoch = (now - epoch) / 60000;
+            fast_forward_target = Math.round(minutes_since_epoch * gpm);
         }
 
         let pattern_parameter = parameters["pattern"];
@@ -208,8 +286,10 @@ var
 
         if(parameters["noui"] === "1")
         {
+            // Conway-clock fork: hide the entire toolbar (not just selected
+            // buttons) so kiosk mode shows just the canvas.
             var elements = [
-                "statusbar", "about_button", "examples_menu",
+                "toolbar", "statusbar", "about_button", "examples_menu",
                 "import_button", "settings_button", "zoomout_button",
                 "zoomin_button", "clear_button", "superstep_button",
                 "step_button", "rewind_button"
@@ -219,6 +299,14 @@ var
             {
                 $(elements[i]).style.display = "none";
             }
+        }
+
+        // Conway-clock fork: ?refresh=N reloads the page every N seconds so
+        // wall-clock sync stays exact (engine drift between syncs doesn't
+        // matter — each load fast-forwards to "now").
+        if(parameters["refresh"] && /^\d+$/.test(parameters["refresh"]))
+        {
+            setTimeout(function() { location.reload(); }, Number(parameters["refresh"]) * 1000);
         }
 
         if(parameters["fps"] && /^\d+$/.test(parameters["fps"]))
@@ -1228,6 +1316,36 @@ var
             }
 
             hide_overlay();
+
+            // Conway-clock fork: fast-forward to target generation before first paint.
+            // Done synchronously so the very first frame the user sees is at "now."
+            if(fast_forward_target > 0 && life.generation < fast_forward_target)
+            {
+                var saved_step = life.step;
+                var coarse_step = 18; // 2^18 = 262144 gens per call; tune if too slow.
+                life.set_step(coarse_step);
+                while(life.generation + life.pow2(coarse_step) <= fast_forward_target)
+                {
+                    life.next_generation(true);
+                }
+                // Walk in by halving the step exponent until we land precisely.
+                for(var fine = coarse_step - 1; fine >= 0; fine--)
+                {
+                    life.set_step(fine);
+                    while(life.generation + life.pow2(fine) <= fast_forward_target)
+                    {
+                        life.next_generation(true);
+                    }
+                }
+                life.set_step(saved_step);
+                set_text($("label_step"), Math.pow(2, saved_step));
+            }
+            // After a clock-mode fast-forward, auto-run the engine so the
+            // display visibly advances between page refreshes.
+            if(auto_run)
+            {
+                setTimeout(function() { if(!running) run(); }, 0);
+            }
 
             fit_pattern();
             drawer.redraw(life.root);
