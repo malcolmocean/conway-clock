@@ -164,7 +164,7 @@ var
             // The AM/PM pattern's first 12:01 transition is at gen ≈ 26,500.
             // Empirically this epoch lands the displayed minute on the wall
             // minute within a few seconds.
-            parameters["epoch"] = "11:59:10";
+            parameters["epoch"] = "11:58:40";
             // step=8 (2^3 gens/frame) × fps=24 = 192 gens/sec = 11520 gpm exactly,
             // so the engine ticks in real time between refreshes.
             parameters["step"] = "8";
